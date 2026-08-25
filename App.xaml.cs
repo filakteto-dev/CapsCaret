@@ -139,13 +139,29 @@ public partial class App : System.Windows.Application
         menu.Items.Add(exitItem);
 
         _trayIcon = new System.Windows.Forms.NotifyIcon
-        {
-            Text = "CapsCaret",
-            Icon = System.Drawing.SystemIcons.Application,
-            Visible = true,
-            ContextMenuStrip = menu
-        };
+{
+    Text = "CapsCaret",
+    Icon = LoadTrayIcon(),
+    Visible = true,
+    ContextMenuStrip = menu
+};
     }
+	
+	private static System.Drawing.Icon LoadTrayIcon()
+{
+    var uri = new Uri(
+        "pack://application:,,,/Assets/CapsCaret.ico",
+        UriKind.Absolute
+    );
+
+    var resource =
+        System.Windows.Application.GetResourceStream(uri);
+
+    if (resource is null)
+        return System.Drawing.SystemIcons.Application;
+
+    return new System.Drawing.Icon(resource.Stream);
+}
 
     private void UpdateIndicator()
     {

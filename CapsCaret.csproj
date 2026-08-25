@@ -6,8 +6,14 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
 
+    <ApplicationIcon>Assets\CapsCaret.ico</ApplicationIcon>
+
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\CapsCaret.ico" />
+  </ItemGroup>
 
 </Project>
