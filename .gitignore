@@ -1,0 +1,44 @@
+﻿# .NET build output
+bin/
+obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# JetBrains Rider
+.idea/
+*.sln.iml
+
+# VS Code local settings
+.vscode/
+
+# Build / publish output
+publish/
+artifacts/
+AppPackages/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment / local configuration
+.env
+.env.*
+!.env.example
+
+# Certificates / signing keys
+*.pfx
+*.p12
+*.key
+
+# Temporary files
+*.tmp
+*.temp
+~$*
