@@ -1,20 +1,22 @@
-﻿using System.Collections.Concurrent;
+﻿using System;
+using System.Collections.Concurrent;
+using System.Threading;
 using System.Windows.Automation;
 using System.Windows.Automation.Text;
 
 namespace CapsCaret;
 
-internal sealed class AutomationCaretProvider : IDisposable
+internal sealed class AutomationCaretProvider :
+    IDisposable
 {
-    private readonly BlockingCollection<Action> _queue = new();
+    private readonly BlockingCollection<Action>
+        _queue = new();
+
     private readonly Thread _thread;
 
-    private volatile CaretPosition? _latestPosition;
-    
-    public void Invalidate()
-    {
-        _latestPosition = null;
-    }
+    public event Action<long, int, int>?
+        PositionUpdated;
+
     public AutomationCaretProvider()
     {
         _thread = new Thread(WorkerLoop)
@@ -23,40 +25,39 @@ internal sealed class AutomationCaretProvider : IDisposable
             Name = "CapsCaret UI Automation"
         };
 
-        _thread.SetApartmentState(ApartmentState.MTA);
+        _thread.SetApartmentState(
+            ApartmentState.MTA
+        );
+
         _thread.Start();
     }
 
-    public void RequestUpdate()
+    public void RequestUpdate(
+        long requestVersion)
     {
-        if (_queue.Count > 0)
+        if (_queue.IsAddingCompleted)
             return;
 
-        _queue.Add(UpdateCaretPosition);
-    }
-
-    public bool TryGetLatestPosition(
-        out int x,
-        out int y)
-    {
-        var position = _latestPosition;
-
-        if (position is null)
+        try
         {
-            x = 0;
-            y = 0;
-            return false;
+            _queue.Add(
+                () =>
+                    UpdateCaretPosition(
+                        requestVersion
+                    )
+            );
         }
-
-        x = position.X;
-        y = position.Y;
-
-        return true;
+        catch (InvalidOperationException)
+        {
+            // Application is shutting down.
+        }
     }
 
     private void WorkerLoop()
     {
-        foreach (var action in _queue.GetConsumingEnumerable())
+        foreach (
+            var action
+            in _queue.GetConsumingEnumerable())
         {
             try
             {
@@ -64,59 +65,60 @@ internal sealed class AutomationCaretProvider : IDisposable
             }
             catch
             {
-                _latestPosition = null;
+                // Another application's UIA provider
+                // must never crash CapsCaret.
             }
         }
     }
 
-    private void UpdateCaretPosition()
+    private void UpdateCaretPosition(
+        long requestVersion)
     {
         try
         {
-            var element = AutomationElement.FocusedElement;
-            
+            var element =
+                AutomationElement.FocusedElement;
+
             if (element is null)
-            {
-                _latestPosition = null;
                 return;
-            }
 
             if (!element.TryGetCurrentPattern(
                     TextPattern.Pattern,
                     out var patternObject))
             {
-                _latestPosition = null;
                 return;
             }
 
-            var pattern = (TextPattern)patternObject;
+            var pattern =
+                (TextPattern)patternObject;
 
-            var selections = pattern.GetSelection();
+            var selections =
+                pattern.GetSelection();
 
             if (selections.Length == 0)
-            {
-                _latestPosition = null;
                 return;
-            }
 
-            var caretRange = selections[0];
+            var caretRange =
+                selections[0];
 
-            if (TryGetPositionFromRange(
+            if (!TryGetPositionFromRange(
                     caretRange,
                     out var x,
                     out var y))
             {
-                _latestPosition =
-                    new CaretPosition(x, y);
-
                 return;
             }
 
-            _latestPosition = null;
+            PositionUpdated?.Invoke(
+                requestVersion,
+                x,
+                y
+            );
         }
         catch
         {
-            _latestPosition = null;
+            // Broken or temporarily unavailable
+            // UI Automation provider.
         }
     }
 
@@ -130,18 +132,25 @@ internal sealed class AutomationCaretProvider : IDisposable
 
         if (rectangles.Length > 0)
         {
-            var rect = rectangles[^1];
+            var rect =
+                rectangles[^1];
 
-            x = (int)Math.Round(rect.Right);
-            y = (int)Math.Round(rect.Bottom);
+            x = (int)Math.Round(
+                rect.Right
+            );
+
+            y = (int)Math.Round(
+                rect.Bottom
+            );
 
             return true;
         }
 
-        // У обычного caret диапазон часто имеет длину 0.
-        // Тогда UI Automation возвращает пустой массив rect.
-        // Расширяем копию до одного символа.
-        var expanded = range.Clone();
+        // A caret is often a zero-length text range.
+        // Such a range can have no bounding rectangle,
+        // so expand a copy to one character.
+        var expanded =
+            range.Clone();
 
         try
         {
@@ -156,12 +165,14 @@ internal sealed class AutomationCaretProvider : IDisposable
             {
                 x = 0;
                 y = 0;
+
                 return false;
             }
 
-            var rect = rectangles[0];
+            var rect =
+                rectangles[0];
 
-            var atStart =
+            bool atStart =
                 range.CompareEndpoints(
                     TextPatternRangeEndpoint.Start,
                     expanded,
@@ -174,7 +185,9 @@ internal sealed class AutomationCaretProvider : IDisposable
                     : rect.Right
             );
 
-            y = (int)Math.Round(rect.Bottom);
+            y = (int)Math.Round(
+                rect.Bottom
+            );
 
             return true;
         }
@@ -182,17 +195,19 @@ internal sealed class AutomationCaretProvider : IDisposable
         {
             x = 0;
             y = 0;
+
             return false;
         }
     }
 
     public void Dispose()
     {
-        _queue.CompleteAdding();
-    }
+        if (!_queue.IsAddingCompleted)
+        {
+            _queue.CompleteAdding();
+        }
 
-    private sealed record CaretPosition(
-        int X,
-        int Y
-    );
+        // Give worker a moment to finish cleanly.
+        _thread.Join(300);
+    }
 }
