@@ -148,7 +148,7 @@ public partial class OverlayWindow : Window
             To = 0.97,
             Duration = TimeSpan.FromMilliseconds(45)
         };
-
+        
         fade.Completed += (_, _) =>
         {
             if (version != _animationVersion)
@@ -231,7 +231,14 @@ public partial class OverlayWindow : Window
 
     public void MoveNearCaret(int x, int y)
     {
-        var hwnd = new WindowInteropHelper(this).Handle;
+        var helper = new WindowInteropHelper(this);
+
+        var hwnd = helper.Handle;
+
+        if (hwnd == IntPtr.Zero)
+        {
+            hwnd = helper.EnsureHandle();
+        }
 
         var dpi = VisualTreeHelper.GetDpi(this);
 
