@@ -1,5 +1,4 @@
-﻿using System;
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Threading;
 
 namespace CapsCaret;
@@ -26,12 +25,60 @@ public partial class App : System.Windows.Application
 
     private bool _windowMoveInProgress;
     
+    private AutomationCaretProvider? _automationCaret;
+    
+    private JavaCaretProvider? _javaCaret;
+    
+    private bool TryGetCaretPosition(
+        out int x,
+        out int y)
+    {
+        // 1. Классический Win32.
+        if (NativeMethods.TryGetCaretPosition(
+                out x,
+                out y))
+        {
+            return true;
+        }
+
+        // 2. Java Access Bridge.
+        //
+        // Проверяем перед UIA специально:
+        // Rider через UIA виден только как SunAwtFrame,
+        // а JAB умеет получить настоящий focused Java component.
+        if (_javaCaret is not null &&
+            _javaCaret.TryGetCaretPosition(
+                out x,
+                out y))
+        {
+            return true;
+        }
+
+        // 3. Windows UI Automation.
+        if (_automationCaret is null)
+        {
+            x = 0;
+            y = 0;
+            return false;
+        }
+        
+        _automationCaret.RequestUpdate();
+
+        return _automationCaret.TryGetLatestPosition(
+            out x,
+            out y
+        );
+    }
     private void Application_Startup(
         object sender,
         StartupEventArgs e
     )
     {
+        _javaCaret = new JavaCaretProvider();
+        _javaCaret.Initialize();
         _overlay = new OverlayWindow();
+        _automationCaret =
+            new AutomationCaretProvider();
 
         StartWindowMoveHook();
 
@@ -46,7 +93,7 @@ public partial class App : System.Windows.Application
 
         _timer.Start();
     }
-
+    
     private void OnWindowMoveSizeEvent(
         IntPtr hWinEventHook,
         uint eventType,
@@ -81,7 +128,7 @@ public partial class App : System.Windows.Application
 
                 // Положение caret изменилось вместе с окном,
                 // но это не было редактированием текста.
-                if (NativeMethods.TryGetCaretPosition(
+                if (TryGetCaretPosition(
                         out var x,
                         out var y))
                 {
@@ -190,6 +237,8 @@ public partial class App : System.Windows.Application
             _lastCaretX = null;
             _lastCaretY = null;
 
+            _automationCaret?.Invalidate();
+
             _overlay.HideAnimated();
             return;
         }
@@ -197,20 +246,21 @@ public partial class App : System.Windows.Application
         // Caps только что включили
         if (!_wasCapsLockOn)
         {
-            _wasCapsLockOn = true;
-
-            if (!NativeMethods.TryGetCaretPosition(
+            if (!TryGetCaretPosition(
                     out var initialX,
                     out var initialY))
             {
-                _overlay.HideAnimated();
+                // UI Automation ещё получает свежий caret.
+                // Старую позицию не показываем.
+                _overlay.HideImmediately();
                 return;
             }
+
+            _wasCapsLockOn = true;
 
             _lastCaretX = initialX;
             _lastCaretY = initialY;
 
-            // При включении Caps задержка после движения caret не нужна.
             _lastCaretMovement = DateTime.MinValue;
 
             _overlay.MoveNearCaret(initialX, initialY);
@@ -227,7 +277,7 @@ public partial class App : System.Windows.Application
             return;
         }
         
-        if (!NativeMethods.TryGetCaretPosition(
+        if (!TryGetCaretPosition(
                 out var x,
                 out var y))
         {
@@ -267,7 +317,9 @@ public partial class App : System.Windows.Application
     private void ShutdownApplication()
     {
         _timer?.Stop();
-    
+        _automationCaret?.Dispose();
+        _automationCaret = null;
+        
         if (_moveSizeHook != IntPtr.Zero)
         {
             NativeMethods.RemoveWinEventHook(
