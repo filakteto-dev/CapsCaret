@@ -399,7 +399,6 @@ public partial class App : System.Windows.Application
                 return;
             }
 
-            // Re-sync in case Caps changed while disabled.
             _capsLockOn =
                 NativeMethods.IsCapsLockOn();
 
@@ -407,6 +406,21 @@ public partial class App : System.Windows.Application
             {
                 RefreshIndicatorPosition();
             }
+        };
+
+        var startupItem =
+            new System.Windows.Forms.ToolStripMenuItem
+            {
+                Text = "Start with Windows",
+                Checked = StartupManager.IsEnabled(),
+                CheckOnClick = true
+            };
+
+        startupItem.CheckedChanged += (_, _) =>
+        {
+            StartupManager.SetEnabled(
+                startupItem.Checked
+            );
         };
 
         var exitItem =
@@ -424,9 +438,12 @@ public partial class App : System.Windows.Application
             new System.Windows.Forms.ContextMenuStrip();
 
         menu.Items.Add(enabledItem);
+        menu.Items.Add(startupItem);
+
         menu.Items.Add(
             new System.Windows.Forms.ToolStripSeparator()
         );
+
         menu.Items.Add(exitItem);
 
         _trayIcon =
