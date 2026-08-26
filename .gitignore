@@ -42,3 +42,8 @@ Thumbs.db
 *.tmp
 *.temp
 ~$*
+
+# Test / coverage output
+TestResults/
+coverage/
+*.trx
