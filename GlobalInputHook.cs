@@ -52,6 +52,8 @@ internal sealed class GlobalInputHook : IDisposable
     public event Action? InputActivity;
     public event Action? CapsLockPressed;
 
+    public bool IsMouseButtonDown =>
+        Volatile.Read(ref _mouseButtonsDown) > 0;
     public bool IsInputActive
     {
         get

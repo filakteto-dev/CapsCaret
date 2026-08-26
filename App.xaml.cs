@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -11,24 +11,31 @@ public partial class App : System.Windows.Application
 
     private bool _enabled = true;
 
-    // Window move / resize
+    // Standard Windows move / resize events.
     private IntPtr _moveSizeHook = IntPtr.Zero;
     private NativeMethods.WinEventDelegate? _moveSizeDelegate;
     private bool _windowMoveInProgress;
 
-    // Caret providers
+    // Mouse geometry fallback.
+    // No polling: remember the foreground window rectangle on mouse-down
+    // and compare it once on mouse-up.
+    private bool _mouseGeometryTracking;
+    private IntPtr _mouseDownWindow = IntPtr.Zero;
+    private NativeMethods.WindowBounds? _mouseDownBounds;
+
+    // Caret providers.
     private AutomationCaretProvider? _automationCaret;
     private JavaCaretProvider? _javaCaret;
 
-    // Global keyboard / mouse events
+    // Global keyboard / mouse events.
     private GlobalInputHook? _inputHook;
 
-    // One-shot UX delay after input
+    // One-shot UX delay after ordinary input.
     private DispatcherTimer? _idleTimer;
 
     private bool _capsLockOn;
 
-    // Invalidate stale asynchronous UI Automation results.
+    // Invalidates stale asynchronous UI Automation results.
     private long _stateVersion;
 
     private static readonly TimeSpan IndicatorDelay =
@@ -38,39 +45,34 @@ public partial class App : System.Windows.Application
         object sender,
         StartupEventArgs e)
     {
-        // Overlay
         _overlay = new OverlayWindow();
 
-        // Win32 move / resize events
         StartWindowMoveHook();
 
-        // Java / JetBrains caret provider
         _javaCaret = new JavaCaretProvider();
         _javaCaret.Initialize();
 
-        // UI Automation provider
-        _automationCaret = new AutomationCaretProvider();
-        _automationCaret.PositionUpdated +=
-            OnAutomationPositionUpdated;
+        _automationCaret =
+            new AutomationCaretProvider();
 
-        // Tray
+        _automationCaret.ResultUpdated +=
+            OnAutomationResultUpdated;
+
         CreateTrayIcon();
 
-        // Initial Caps state
         _capsLockOn =
             NativeMethods.IsCapsLockOn();
 
-        // This timer is NOT polling.
-        // It fires only once after 220 ms of inactivity.
         _idleTimer = new DispatcherTimer
         {
             Interval = IndicatorDelay
         };
 
-        _idleTimer.Tick += OnIdleTimerTick;
+        _idleTimer.Tick +=
+            OnIdleTimerTick;
 
-        // Keyboard / mouse events
-        _inputHook = new GlobalInputHook();
+        _inputHook =
+            new GlobalInputHook();
 
         _inputHook.InputActivity +=
             OnGlobalInputActivity;
@@ -80,8 +82,6 @@ public partial class App : System.Windows.Application
 
         _inputHook.Start();
 
-        // If Caps was already enabled when CapsCaret started,
-        // show the indicator after the normal idle delay.
         RestartIdleTimer();
     }
 
@@ -109,17 +109,35 @@ public partial class App : System.Windows.Application
 
         _idleTimer?.Stop();
 
-        // Any real interaction hides the indicator.
         _overlay?.HideAnimated();
 
-        // If a key/button is still physically held,
-        // do NOT start the 220 ms timer yet.
-        //
-        // This fixes Backspace/Space/letters autorepeat.
+        bool mouseButtonDown =
+            _inputHook?.IsMouseButtonDown == true;
+
+        if (mouseButtonDown)
+        {
+            StartMouseGeometryTracking();
+            return;
+        }
+
+        if (_mouseGeometryTracking)
+        {
+            bool geometryChanged =
+                FinishMouseGeometryTracking();
+
+            if (geometryChanged)
+            {
+                RefreshAfterWindowGeometryChange();
+                return;
+            }
+        }
+
+        if (_windowMoveInProgress)
+            return;
+
         if (_inputHook?.IsInputActive == true)
             return;
 
-        // Last key/button was released.
         RestartIdleTimer();
     }
 
@@ -129,8 +147,6 @@ public partial class App : System.Windows.Application
 
         _idleTimer?.Stop();
 
-        // The low-level hook fires immediately on Caps key-down.
-        // Toggle our cached state instead of waiting for polling.
         _capsLockOn = !_capsLockOn;
 
         if (!_enabled)
@@ -141,14 +157,70 @@ public partial class App : System.Windows.Application
 
         if (!_capsLockOn)
         {
-            // Caps OFF → disappear immediately.
             _overlay?.HideAnimated();
             return;
         }
 
-        // Caps ON → show immediately.
-        // No 220 ms delay here.
         RefreshIndicatorPosition();
+    }
+
+    // ------------------------------------------------------------
+    // MOUSE GEOMETRY FALLBACK
+    // ------------------------------------------------------------
+
+    private void StartMouseGeometryTracking()
+    {
+        if (_mouseGeometryTracking)
+            return;
+
+        _mouseGeometryTracking = true;
+        _mouseDownWindow = IntPtr.Zero;
+        _mouseDownBounds = null;
+
+        if (NativeMethods.TryGetForegroundRootBounds(
+                out var rootHwnd,
+                out var bounds))
+        {
+            _mouseDownWindow = rootHwnd;
+            _mouseDownBounds = bounds;
+        }
+    }
+
+    private bool FinishMouseGeometryTracking()
+    {
+        bool changed = false;
+
+        if (_mouseDownWindow != IntPtr.Zero &&
+            _mouseDownBounds is not null &&
+            NativeMethods.TryGetForegroundRootBounds(
+                out var rootHwnd,
+                out var bounds) &&
+            rootHwnd == _mouseDownWindow &&
+            bounds != _mouseDownBounds.Value)
+        {
+            changed = true;
+        }
+
+        _mouseGeometryTracking = false;
+        _mouseDownWindow = IntPtr.Zero;
+        _mouseDownBounds = null;
+
+        return changed;
+    }
+
+    private void RefreshAfterWindowGeometryChange()
+    {
+        _stateVersion++;
+
+        _idleTimer?.Stop();
+
+        // Geometry reported by accessibility providers can lag behind
+        // the actual window while it is being moved/resized. Hide the
+        // old indicator immediately, then let the normal idle delay
+        // request a fresh caret position once the window has settled.
+        _overlay?.HideImmediately();
+
+        RestartIdleTimer();
     }
 
     // ------------------------------------------------------------
@@ -161,9 +233,6 @@ public partial class App : System.Windows.Application
     {
         _idleTimer?.Stop();
 
-        // Occasionally synchronize with the actual Windows state.
-        // This handles Caps changes made by something other than
-        // our physical keyboard hook.
         bool actualCapsState =
             NativeMethods.IsCapsLockOn();
 
@@ -191,13 +260,10 @@ public partial class App : System.Windows.Application
 
         if (!_enabled)
             return;
-
         if (!_capsLockOn)
             return;
-
         if (_windowMoveInProgress)
             return;
-
         if (_inputHook?.IsInputActive == true)
             return;
 
@@ -212,22 +278,26 @@ public partial class App : System.Windows.Application
     {
         if (!_enabled)
             return;
-
         if (!_capsLockOn)
             return;
-
         if (_windowMoveInProgress)
             return;
-
         if (_inputHook?.IsInputActive == true)
             return;
 
-        long version = _stateVersion;
+        long version =
+            _stateVersion;
 
-        // 1. Classic Win32 caret.
-        if (NativeMethods.TryGetCaretPosition(
-                out var x,
-                out var y))
+        int x;
+        int y;
+
+        // 1. Microsoft Active Accessibility.
+        //
+        // Chromium exposes a useful caret here. This path is deliberately
+        // separate from the classic Win32 caret.
+        if (NativeMethods.TryGetAccessibleCaretPosition(
+                out x,
+                out y))
         {
             ShowIndicatorAt(
                 version,
@@ -238,8 +308,7 @@ public partial class App : System.Windows.Application
             return;
         }
 
-        // 2. Java Access Bridge:
-        // Rider / IntelliJ / other JetBrains IDEs.
+        // 2. Java Access Bridge.
         if (_javaCaret is not null &&
             _javaCaret.TryGetCaretPosition(
                 out x,
@@ -254,17 +323,21 @@ public partial class App : System.Windows.Application
             return;
         }
 
-        // 3. UI Automation:
-        // Chrome, ChatGPT, XAML, etc.
+        // 3. UI Automation.
         //
-        // This runs asynchronously on its own worker thread.
-        _automationCaret?.RequestUpdate(version);
+        // The provider first uses the managed TextPattern path and can
+        // fall back internally to native TextPattern2 caret geometry
+        // for empty text controls.
+        //
+        // There is intentionally no classic Win32 fallback.
+        _automationCaret?.RequestUpdate(
+            version
+        );
     }
 
-    private void OnAutomationPositionUpdated(
+    private void OnAutomationResultUpdated(
         long requestVersion,
-        int x,
-        int y)
+        AutomationCaretResult result)
     {
         if (Dispatcher.HasShutdownStarted)
             return;
@@ -272,11 +345,32 @@ public partial class App : System.Windows.Application
         Dispatcher.BeginInvoke(
             new Action(() =>
             {
-                ShowIndicatorAt(
-                    requestVersion,
-                    x,
-                    y
-                );
+                if (requestVersion != _stateVersion)
+                    return;
+
+                switch (result.Kind)
+                {
+                    case AutomationCaretResultKind.Success:
+                        ShowIndicatorAt(
+                            requestVersion,
+                            result.X,
+                            result.Y
+                        );
+                        break;
+
+                    case AutomationCaretResultKind.TextControlWithoutCaret:
+                        // A text control exists, but it does not currently
+                        // expose trustworthy caret geometry.
+                        //
+                        // Do NOT fall back to classic Win32 here.
+                        break;
+
+                    case AutomationCaretResultKind.Unsupported:
+                        // No reliable caret provider for this control.
+                        // Do not fall back to classic Win32:
+                        // Telegram can expose misleading native caret coordinates.
+                        break;
+                }
             })
         );
     }
@@ -286,38 +380,33 @@ public partial class App : System.Windows.Application
         int x,
         int y)
     {
-        // UIA might return a result from an old request.
-        // Ignore it if anything changed since then.
         if (version != _stateVersion)
             return;
-
         if (!_enabled)
             return;
-
         if (!_capsLockOn)
             return;
-
         if (_windowMoveInProgress)
             return;
-
         if (_inputHook?.IsInputActive == true)
             return;
-
         if (_overlay is null)
             return;
 
-        _overlay.MoveNearCaret(x, y);
+        _overlay.MoveNearCaret(
+            x,
+            y
+        );
+
         _overlay.ShowAnimated();
     }
 
     // ------------------------------------------------------------
-    // WINDOW MOVE / RESIZE
+    // STANDARD WINDOW MOVE / RESIZE
     // ------------------------------------------------------------
 
     private void StartWindowMoveHook()
     {
-        // Store delegate in a field so GC cannot collect it
-        // while native Windows code is still using it.
         _moveSizeDelegate =
             OnWindowMoveSizeEvent;
 
@@ -351,7 +440,6 @@ public partial class App : System.Windows.Application
 
                     _idleTimer?.Stop();
 
-                    // No fade while moving a window.
                     _overlay.HideImmediately();
 
                     return;
@@ -362,10 +450,7 @@ public partial class App : System.Windows.Application
                 {
                     _windowMoveInProgress = false;
 
-                    _stateVersion++;
-
-                    // Wait 220 ms after dropping the window.
-                    RestartIdleTimer();
+                    RefreshAfterWindowGeometryChange();
                 }
             })
         );
@@ -473,13 +558,14 @@ public partial class App : System.Windows.Application
                 .SystemIcons.Application;
         }
 
-        // Clone the icon so it does not depend
-        // on the resource stream remaining open.
-        using var stream = resource.Stream;
+        using var stream =
+            resource.Stream;
+
         using var icon =
             new System.Drawing.Icon(stream);
 
-        return (System.Drawing.Icon)icon.Clone();
+        return (System.Drawing.Icon)
+            icon.Clone();
     }
 
     // ------------------------------------------------------------
@@ -505,8 +591,8 @@ public partial class App : System.Windows.Application
 
         if (_automationCaret is not null)
         {
-            _automationCaret.PositionUpdated -=
-                OnAutomationPositionUpdated;
+            _automationCaret.ResultUpdated -=
+                OnAutomationResultUpdated;
 
             _automationCaret.Dispose();
             _automationCaret = null;
