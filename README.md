@@ -114,6 +114,19 @@ Bug reports, compatibility reports and pull requests are welcome.
 
 Reports about applications that do or do not work with CapsCaret are especially useful.
 
+## Code signing policy
+
+Free code signing is provided by SignPath.io, with a certificate issued by the SignPath Foundation.
+
+### Team roles
+
+- Committer and reviewer: project maintainer
+- Approver: project maintainer
+
+### Privacy
+
+CapsCaret does not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
+
 ## License
 
 CapsCaret is released under the MIT License.
