@@ -1,0 +1,111 @@
+name: Build and release CapsCaret
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore .\CapsCaret.csproj --runtime win-x64
+
+      - name: Build
+        run: dotnet build .\CapsCaret.csproj --configuration Release --runtime win-x64 --no-restore
+
+      - name: Publish self-contained application
+        run: >-
+          dotnet publish .\CapsCaret.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          --no-restore
+          --output .\artifacts\publish
+          -p:PublishSingleFile=false
+          -p:DebugType=None
+          -p:DebugSymbols=false
+
+      - name: Choose package version
+        run: |
+          [xml] $project = Get-Content .\CapsCaret.csproj
+          $projectVersion = "v$($project.Project.PropertyGroup.Version)"
+
+          if ('${{ github.ref_type }}' -eq 'tag') {
+            $version = '${{ github.ref_name }}'
+
+            if ($version -ne $projectVersion) {
+              throw "Tag '$version' does not match project version '$projectVersion'."
+            }
+          }
+          else {
+            $version = $projectVersion
+          }
+
+          "PACKAGE_VERSION=$version" >> $env:GITHUB_ENV
+          "ARCHIVE_NAME=CapsCaret-$version-win-x64.zip" >> $env:GITHUB_ENV
+
+      - name: Create ZIP package
+        run: |
+          Compress-Archive `
+            -Path .\artifacts\publish\* `
+            -DestinationPath ".\artifacts\$env:ARCHIVE_NAME" `
+            -CompressionLevel Optimal
+
+      - name: Generate SHA256 checksum
+        run: |
+          $hash = (Get-FileHash ".\artifacts\$env:ARCHIVE_NAME" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $env:ARCHIVE_NAME" | Set-Content .\artifacts\SHA256SUMS.txt -Encoding ascii
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: CapsCaret-${{ env.PACKAGE_VERSION }}-win-x64
+          path: |
+            artifacts/${{ env.ARCHIVE_NAME }}
+            artifacts/SHA256SUMS.txt
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download verified build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: CapsCaret-*-win-x64
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            release-assets/*.zip
+            release-assets/SHA256SUMS.txt
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
