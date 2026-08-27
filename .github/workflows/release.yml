@@ -76,7 +76,7 @@ jobs:
           "$hash  $env:ARCHIVE_NAME" | Set-Content .\artifacts\SHA256SUMS.txt -Encoding ascii
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: CapsCaret-${{ env.PACKAGE_VERSION }}-win-x64
           path: |
@@ -94,7 +94,7 @@ jobs:
 
     steps:
       - name: Download verified build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: CapsCaret-*-win-x64
           path: release-assets
